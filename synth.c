@@ -13,6 +13,7 @@
 #define X_SIZE 1280
 #define Y_SIZE 720 
 #define SLIDERS 6
+#define HIST 30
 #define CX_SIZE 100*SLIDERS
 #define CY_SIZE 400
 #define STOP 20
@@ -34,6 +35,20 @@ unsigned char *buff;
 unsigned char *buff2;
 unsigned long black,white;
 
+struct slid {
+        float value[4];
+        char name[8];
+        int wv[3];
+        int pos[4];
+        int mcol;
+        float smax[3];
+        float smin[3];
+        float max[3];
+        float min[3];
+        float osc[3];
+        int eam[4];
+};
+
 /* here are our X routines declared! */
 void init_x();
 void close_x();
@@ -41,20 +56,22 @@ void redraw();
 void *lfo();
 void *dbuf();
 void *control();
-void slider(int);
+void slider(struct slid *,int);
 void knob(int,int,int);
-void toggle(int,int,int);
+void c_toggle(struct slid *,int,int);
+void b_toggle(struct slid *,int,int,int,int,int);
 float osc (float, float, float , float, int ,int);
-float ra,ga,ba;
+float param[10][3];
 float byf,ryf,gyf;
 int rw,gw,bw;
-int rph,gph,bph;
-int rw1,gw1,bw1;
-int rmax,gmax,bmax,ready;
+float rph,gph,bph;
+float rmax,gmax,bmax;
 int tick,rate;
 int state[2];
 int mix,del;
-
+int *mask;
+XColor    color[100];
+struct slid *slids;
 
 /* Jpegs */
 int read_JPEG_file (char *, unsigned char *, int *);
@@ -73,6 +90,7 @@ int main(int argc,char *argv[])
         tim.tv_sec = 0;
        	tim.tv_nsec = 10000000;
 
+        slids=(struct slid *)malloc(sizeof(struct slid)*(SLIDERS+10));
         buff=(unsigned char *)malloc(sizeof(unsigned char)*6*X_SIZE*Y_SIZE);
 	pthread_t lfo_id,dis_id,cnt_id;
 	pthread_create(&lfo_id, NULL, lfo, NULL);
@@ -84,9 +102,15 @@ int main(int argc,char *argv[])
 	int x,y,r;
 	XS=X_SIZE*3;
 	TS=XS*Y_SIZE;
-	bf=1; rf=1; gf=1; ryf=1; gyf=1; byf=1; ba=127; ga=127; ra=127; rate=2; r=0; state[0]=0; state[1]=0; rph=0; gph=0; bph=0; mix=50; del=399;
+	bf=1; rf=1; gf=1; ryf=1; gyf=1; byf=1; rate=2; r=0; state[0]=0; state[1]=0; rph=0; gph=0; bph=0; mix=50; del=HIST-1;
 	while (1>0)
 	{
+		float amplitude[3];
+		float phase[3];
+		float wavform[3];
+		float wavfrm[3];
+		float freq[3];
+		float freqc[3];
 		while (state[0]>0 && state[1]>0)
 		{
        			nanosleep(&tim , &tim2);
@@ -107,30 +131,35 @@ int main(int argc,char *argv[])
 			state[r]=2;
 			//printf ("two %d \n",r);
 		}
+		float bbf,rrf,ggf,rp,gp,bp;
+		// copy in the values so they dont change during the frame.
+		int cl;
+		for (cl=0;cl<3;cl++)
+		{
+			amplitude[cl]=param[2][cl];
+			freq[cl]=param[3][cl];
+			phase[cl]=param[4][cl];
+			wavform[cl]=param[5][cl];
+			wavfrm[cl]=param[6][cl];
+			freqc[cl]=param[9][cl];
+		}
+
 		for (y=0;y<Y_SIZE;y++)
 		{
+			float maxf[3];
+			for (cl=0;cl<3;cl++){ maxf[cl]=osc(0,freq[cl],freqc[cl],y,Y_SIZE,wavfrm[cl]); }
 			int Y;
-			float bbf,rrf,ggf,rp,gp,bp;
-			bp=osc(0,X_SIZE,bph,y,Y_SIZE,0);
-			rp=osc(0,X_SIZE,rph,y,Y_SIZE,0);
-			gp=osc(0,X_SIZE,gph,y,Y_SIZE,0);
-			bbf=osc(0,bmax,byf,y,Y_SIZE,bw);
-			rrf=osc(0,rmax,ryf,y,Y_SIZE,rw);
-			ggf=osc(0,gmax,gyf,y,Y_SIZE,gw);
 			Y=y*XS+(r*TS);
 			for (x=0;x<X_SIZE;x++)
 			{
 				int p;
 				p=Y+(3*x);
-				buff[p]=osc(0,ra,rrf,x+rp,X_SIZE,rw);
-				buff[p+1]=osc(0,ga,ggf,x+gp,X_SIZE,bw);
-				buff[p+2]=osc(0,ba,bbf,x+bp,X_SIZE,gw);
+				for (cl=0;cl<3;cl++){ buff[p+cl]=osc(0,amplitude[cl],maxf[cl],x+phase[cl],X_SIZE,wavform[cl]); }
 			}
 		}
 		if ( state[0]==2 && state[1]==0){ state[0]=1;}
 		else if ( state[1]==2 && state[0]==0){ state[1]=1;}
 		else { state[r]=1; }
-		
 	}
 }
 
@@ -138,6 +167,7 @@ float osc (float min, float max, float cycles, float p, int span,int form)
 {
 	float ret,diff;
 	diff=max-min;
+	// sin
 	if (form==0)
 	{
 		ret=min+(diff*(1+sin(PI*p*cycles/span))/2);
@@ -146,9 +176,11 @@ float osc (float min, float max, float cycles, float p, int span,int form)
 	{
 		ret=min+((diff*((int)(p*cycles)%span))/span);
 	}
+	// square
 	else if (form==2)
 	{
 		if (((float)(((int)(p*cycles))%span)/span)<0.5){ ret=min;}else{ret=max;}
+	// rand
 	}else if (form==3)
 	{
 		ret=min+rand()%(int)diff;
@@ -168,7 +200,7 @@ void *dbuf ()
         tim.tv_nsec = 10000000L;
 	wri=del;
 	rea=0;
-        verb=(unsigned char *)malloc(sizeof(unsigned char)*400*n);
+        verb=(unsigned char *)malloc(sizeof(unsigned char)*(HIST+1)*n);
        	while (1>0)
 	{
 		in=tick;
@@ -193,15 +225,12 @@ void *dbuf ()
 			x_buffer[p+1]=ng;
 			nb=((pix*verb[rd++])+(mix*buff[q++]))/100;
 			x_buffer[p]=nb;
-			verb[wr++]=nb;
 			verb[wr++]=nr;
 			verb[wr++]=ng;
+			verb[wr++]=nb;
 		}
 		rea++;if( rea>del){rea=0;}	
 		wri=rea+del;if(wri>del){wri=wri-del-1;}
-		//if(wri>0){rea=wri-1;}else{rea=99;}
-		//memcopy(buff
-		//printf ("rea %d wri %d del %d\n",rea,wri,del);
 		state[r]=0;
 		while (tick-in<rate)
 		{
@@ -222,28 +251,38 @@ void *lfo ()
 	{
                 nanosleep(&tim , &tim2);
 		tick++;
-		ba=osc(10,255,1,tick,1403,0);
-		ra=osc(10,255,1,tick,1070,0);
-		ga=osc(18,255,1,tick,1100,0);
+		/*ba=osc(10,255,1,tick,4403,0);
+		ra=osc(10,255,1,tick,5070,0);
+		ga=osc(18,255,1,tick,7100,0);*/
+		// oscillate sliders 2-SLIDERS 1 is the mixer.
+		int a;
+		for (a=2;a<=SLIDERS;a++)
+		{
+			int clr;
+			for (clr=0;clr<3;clr++)
+			{
+				if (slids[a].eam[clr]==1){ param[a][clr]=osc(slids[a].smin[clr],slids[a].smax[clr],1,tick,slids[a].osc[clr],0);}
+			}
+		}
 
-		rph=osc(0,5,1,tick,2000,1);
-		gph=osc(0,9,1,tick,3400,1);
-		bph=osc(0,13,1,tick,2900,1);
+		rph=osc(0,1,1,tick,2000,0);
+		gph=osc(0,1,1,tick,2000,0);
+		bph=osc(0,1,1,tick,2000,0);
 
-		gw=osc(0,3,1,tick,4200,1);
-		bw=osc(0,3,1,tick,3100,1);
-		rw=osc(0,3,1,tick,5000,1);
+		gw=osc(0,3,1,tick,9000,1);
+		bw=osc(0,3,1,tick,9000,1);
+		rw=osc(0,3,1,tick,9000,1);
 
-		gyf=osc(0,3,1,tick,30400,1);
-		byf=osc(0,3,1,tick,30410,1);
-		ryf=osc(0,3,1,tick,30420,1);
+		param[9][0]=osc(0,5,1,tick,3400,0);
+		param[9][1]=osc(0,5,1,tick,3400,0);
+		param[9][2]=osc(0,5,1,tick,3400,0);
 
-		bmax=osc(0,50,1,tick,9060,0);
-		gmax=osc(0,50,1,tick,8000,0);
-		rmax=osc(0,50,1,tick,7200,0);
+		//bmax=osc(0,6.1,1,tick,9060,0);
+	//	gmax=osc(0,7.2,1,tick,8000,0);
+	//	rmax=osc(0,8.2,1,tick,7200,0);
 
 		//mix=osc(20,30,1,tick,3000,0);
-		//del=osc(399,1,1,tick,6110,1);
+		//del=osc(HIST,1,1,tick,6110,1);
 		//del=18;
 		//mix=40;
 
@@ -257,82 +296,209 @@ void *lfo ()
 void *control()
 {
 	XEvent event;           /* the XEvent declaration !!! */
+	int *bval,clr;
 	struct timespec tim, tim2;
-       	tim.tv_sec = 2;
+       	tim.tv_sec = 1;
        	tim.tv_nsec = 10000000L;
-	int x_point,y_point,kpoint,ppoint1,ppoint2,sl;
+	int x_point,y_point,kpoint,ppoint1,ppoint2,sl,n;
+	char eam[10];
+
+	strcpy(eam,"extoscman");
+
+        bval=(int *)malloc(sizeof(int)*(SLIDERS+10));
+        mask=(int *)malloc(sizeof(int)*CX_SIZE*CY_SIZE);
+
+	strcpy(slids[1].name,"mix  ");
+	strcpy(slids[2].name,"amp  ");
+	strcpy(slids[3].name,"freq ");
+	strcpy(slids[4].name,"phase");
+	strcpy(slids[5].name,"wvfm1");
+	strcpy(slids[6].name,"wvfm2");
+
+	for (clr=0;clr<3;clr++) { 
+		slids[2].min[clr]=0; slids[2].max[clr]=255;  
+		slids[3].min[clr]=0; slids[3].max[clr]=300; 
+		slids[4].min[clr]=0; slids[4].max[clr]=X_SIZE;  
+		slids[5].min[clr]=0; slids[5].max[clr]=3;  
+		slids[6].min[clr]=0; slids[6].max[clr]=3; 
+		slids[2].smin[clr]=slids[2].min[clr]; slids[2].smax[clr]=slids[2].max[clr];
+		slids[3].smin[clr]=slids[3].min[clr]; slids[3].smax[clr]=slids[3].max[clr];
+		slids[4].smin[clr]=slids[4].min[clr]; slids[4].smax[clr]=slids[4].max[clr];
+		slids[5].smin[clr]=slids[5].min[clr]; slids[5].smax[clr]=slids[5].max[clr];
+		slids[6].smin[clr]=slids[6].min[clr]; slids[6].smax[clr]=slids[6].max[clr];
+	}
+
+	for (n=0;n<CX_SIZE*CY_SIZE;n++){mask[n]=0;}
 	
         nanosleep(&tim , &tim2);
 	printf("Starting  \n");
-	kpoint=STOP;
-	ppoint1=STOP;
-	ppoint2=STOP;
-	for (sl=0;sl<SLIDERS;sl++){ slider(sl);knob(kpoint,sl,1);}
+	// BAsic layout
+	for (sl=1;sl<=SLIDERS;sl++){ slider(slids,sl);knob(STOP,sl,1);
+		c_toggle(slids+sl,sl,0);
+		b_toggle(slids+sl,sl,sl*CX_SIZE/(SLIDERS+3),S2LOC,3,0);
+		slids[sl].eam[0]=2;
+		slids[sl].eam[1]=2;
+		slids[sl].eam[2]=2;
+		slids[sl].eam[3]=2;
+		XSetForeground(display,cgc,white);
+		XClearArea(display, cwin, ((sl*CX_SIZE)/(SLIDERS+3))+18,S2LOC-10,20,20,0 );
+		XDrawString(display,cwin,cgc,((sl*CX_SIZE)/(SLIDERS+3))+18,S2LOC,eam+(3*(slids[sl].eam[slids[sl].mcol])),3);
+	}
+	b_toggle(slids+10,210,CX_SIZE-90,40,3,0);
+	b_toggle(slids+11,211,CX_SIZE-90,80,3,0);
+	int pressed;pressed=0;
 	while (1>0)
 	{
+		int rval,t;
              	XNextEvent(display, &event);
                 if (event.type==ButtonPress ) {
                         x_point=event.xbutton.x; y_point=event.xbutton.y;
-			printf("press x %d y %d \n",x_point,y_point);
+			rval=mask[x_point+(y_point*CX_SIZE)];
+			if (rval>0 && rval<100){pressed=1;}
+			printf("press x %d y %d val %d\n",x_point,y_point,rval);
+			if (rval>100 && rval<200) { t=rval-100; c_toggle(slids+t,t,1); }
+			if (rval>200 ) { t=rval-200; 
+				b_toggle(slids+t,t,t*CX_SIZE/(SLIDERS+3),S2LOC,2,1);}
 		}
                 if (event.type==ButtonRelease ) {
                         x_point=event.xbutton.x; y_point=event.xbutton.y;
 			printf("release x %d y %d \n",x_point,y_point);
-			
+			if (rval>100 && rval<200) { c_toggle(slids+t,rval-100,0); }
+			if (rval>200 ) { t=rval-200;b_toggle(slids+t,t,t*CX_SIZE/(SLIDERS+3),S2LOC,2,0);}
+			printf ("t %d mcol %d eam %d\n",t,slids[t].mcol,slids[t].eam[slids[t].mcol]);
+			XSetForeground(display,cgc,white);
+			XClearArea(display, cwin, ((t*CX_SIZE)/(SLIDERS+3))+18,S2LOC-10,20,20,0 );
+			XDrawString(display,cwin,cgc,((t*CX_SIZE)/(SLIDERS+3))+18,S2LOC,eam+(3*(slids[t].eam[slids[t].mcol])),3);
+			pressed=0;
 		}
-		if (event.type=MotionNotify){
+		if (event.type==MotionNotify && pressed==1){
                         x_point=event.xbutton.x; y_point=event.xbutton.y;
 			//printf("move  x %d y %d \n",x_point,y_point);
-			if (y_point>10 && y_point<CY_SIZE-10)
+			if (y_point>=STOP && y_point<=SBOT)
 			{
-				if (x_point<CX_SIZE/2){
-					knob(ppoint1,0,0);
-					knob(y_point,0,1);
-					ppoint1=y_point;
-					mix=100*(y_point-10)/(CY_SIZE-20);
-					printf("mix %d\n",mix);
-				}else{
-					knob(ppoint2,0,0);
-					knob(y_point,0,1);
-					ppoint2=y_point;
-					del=300*(y_point-10)/(CY_SIZE-20);
-					printf("delay %d\n",del);
+				knob(y_point,rval,1);
+				if (slids[rval].eam[slids[rval].mcol]==1){slids[rval].osc[slids[rval].mcol]=y_point*10;}else{
+				if (rval==1 && slids[1].mcol==0){mix=(100*(y_point-STOP))/(SBOT-STOP);}
+				else if (rval==1 && slids[1].mcol==1){del=(HIST*(y_point-STOP))/(SBOT-STOP);}
+				else {
+					if (slids[rval].mcol!=3){param[rval][slids[rval].mcol]=(slids[rval].max[0]*(y_point-STOP))/(SBOT-STOP);}else{
+					param[rval][0]=(slids[rval].max[0]*(y_point-STOP))/(SBOT-STOP);
+					param[rval][1]=(slids[rval].max[1]*(y_point-STOP))/(SBOT-STOP);
+					param[rval][2]=(slids[rval].max[2]*(y_point-STOP))/(SBOT-STOP);
+					}
 				}
+				}
+				printf("mix %d\n",mix);
+				printf("del %d\n",del);
 			}
 		}
 	}
+	free (mask);
 }
 
-void slider(int num)
+void slider(struct slid *slids,int num)
 {
 	int loop,xp;
-	xp=(CX_SIZE*(num+1))/(SLIDERS+1);
-	for (loop=STOP;loop<SBOT;loop++)
+	xp=(CX_SIZE*num)/(SLIDERS+3);
+	XDrawString(display,cwin,cgc,xp-6,10,slids[num].name,5);
+	for (loop=STOP-5;loop<SBOT+5;loop++)
 	{
 		XDrawPoint(display, cwin, cgc, xp, loop);
 	}
 }
 
-void knob(int val,int num,int m)
+void knob(int yval,int num,int m)
 {
-	int xp;
-	if (m==1){XSetForeground(display,cgc,white);}else{XSetForeground(display,cgc,black);}
-	xp=(CX_SIZE*(num+1))/(SLIDERS+1);
-	int h,w,hc,wc;
+	int xp,x,y,h,w;
 	h=4;w=14;
-	for (hc=val-h;hc<=val+h;hc++)
+	XSetForeground(display,cgc,black);
+	xp=(CX_SIZE*num)/(SLIDERS+3);
+	for (y=STOP-h;y<=SBOT+h;y++)
 	{
-		for (wc=3;wc<=w;wc++)
+		int mp; mp=CX_SIZE*y;
+		for (x=3;x<=w;x++)
 		{
-			XDrawPoint(display, cwin, cgc, xp-wc, hc);
-			XDrawPoint(display, cwin, cgc, xp+wc, hc);
+			int x1,x2; x1=xp-x;x2=xp+x;
+			XDrawPoint(display, cwin, cgc, x1, y);
+			XDrawPoint(display, cwin, cgc, x2, y);
+			mask[mp+x1]=0; mask[mp+x2]=0;
+		}
+	}
+	XSetForeground(display,cgc,white);
+	for (y=yval-h;y<=yval+h;y++)
+	{
+		int mp; mp=CX_SIZE*y;
+		//3 is the 3 pixels either side of the two slider knob parts
+		for (x=3;x<=w;x++)
+		{
+			int x1,x2; x1=xp-x;x2=xp+x;
+			XDrawPoint(display, cwin, cgc, x1, y);
+			XDrawPoint(display, cwin, cgc, x2, y);
+			mask[mp+x1]=num; mask[mp+x2]=num;
 		}
 	}
 }
 
-void toggle(int val,int num,int m)
+void c_toggle(struct slid *col,int num,int m)
 {
+	int xp;
+	xp=(CX_SIZE*num)/(SLIDERS+3);
+	int h,w,x,y,c;
+	h=8;w=8;
+	c=col->mcol;
+	if (m==0){
+		XSetForeground(display,cgc,color[c].pixel);
+		for (y=-h;y<=h;y++)
+		{
+			int mp,yy; yy=y+S1LOC;mp=CX_SIZE*yy;
+			for (x=-w;x<=w;x++)
+			{
+				XDrawPoint(display, cwin, cgc, xp+x, yy);
+				mask[mp+x+xp]=num+100; 
+			}
+		}
+	}else{
+		col->mcol++;if(col->mcol>3){col->mcol=0;}
+		XSetForeground(display,cgc,black);
+		for (y=1-h;y<h;y++)
+		{
+			int yy; yy=y+S1LOC;
+			for (x=1-w;x<w;x++)
+			{
+				XDrawPoint(display, cwin, cgc, xp+x, yy);
+			}
+		}
+	}
 }
+
+void b_toggle(struct slid *slids,int num,int xp,int yp, int max,int m )
+{
+        int h,w,x,y;
+        h=8;w=8;
+        if (m==0){
+                slids->eam[slids->mcol]++;if(slids->eam[slids->mcol]>max){slids->eam[slids->mcol]=0;}
+                XSetForeground(display,cgc,white);
+                for (y=-h;y<=h;y++)
+                {
+                        int mp,yy; yy=y+yp;mp=CX_SIZE*yy;
+                        for (x=-w;x<=w;x++)
+                        {
+                                XDrawPoint(display, cwin, cgc, xp+x, yy);
+                                mask[mp+x+xp]=num+200;
+                        }
+                }
+        }else{
+                XSetForeground(display,cgc,black);
+                for (y=1-h;y<h;y++)
+                {
+                        for (x=1-w;x<w;x++)
+                        {
+                                XDrawPoint(display, cwin, cgc, xp+x, yp+y);
+                        }
+                }
+	}
+}  
+
 
 
 struct my_error_mgr {
@@ -533,6 +699,20 @@ void init_x()
         Visual *visual=DefaultVisual(display, 0);
         x_image=XCreateImage(display, visual, DefaultDepth(display,DefaultScreen(display)), ZPixmap, 0, x_buffer, X_SIZE, Y_SIZE, 32, 0);
         //cx_image=XCreateImage(display, visual, DefaultDepth(display,DefaultScreen(display)), ZPixmap, 0, cx_buffer, CX_SIZE, CY_SIZE, 32, 0);
+	//
+	//
+	//
+        Colormap cmap;
+        cmap = DefaultColormap(display, screen);
+        color[3].red = 65535; color[3].green = 65535; color[3].blue = 65535;
+        color[0].red = 65535; color[0].green = 0; color[0].blue = 0;
+        color[1].red = 0; color[1].green = 65535; color[1].blue = 0;
+        color[2].red = 0; color[2].green = 0; color[2].blue = 65535;
+        XAllocColor(display, cmap, &color[0]);
+        XAllocColor(display, cmap, &color[1]);
+        XAllocColor(display, cmap, &color[2]);
+        XAllocColor(display, cmap, &color[3]);
+
 };
 
 void close_x() {
